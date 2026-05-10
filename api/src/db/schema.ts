@@ -33,10 +33,11 @@ export const groups = pgTable('groups', {
 });
 
 export const services = pgTable('services', {
-  id: uuid('id').primaryKey().defaultRandom(),
+  id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull(),
-  description: text('description'),
-  standardTime: integer('standard_time'), // Tempo padrão previsto (minutos)
+  category: text('category').notNull(),
+  estimatedTime: integer('estimated_time').notNull(), // Tempo em minutos
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
 // --- Tabela Principal de Apontamento (Foco em Integração ERP) ---

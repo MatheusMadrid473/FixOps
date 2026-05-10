@@ -7,7 +7,7 @@ import 'dotenv/config';
 import { eq, ne, sql } from 'drizzle-orm';
 
 import { db } from './db/index.js';
-import { users, equipments, groups, maintenanceLogs } from './db/schema.js';
+import { users, equipments, groups, maintenanceLogs, services } from './db/schema.js';
 
 const app = fastify();
 
@@ -394,6 +394,66 @@ app.delete('/equipments/:id', async (request, reply) => {
   }
 });
 
+
+// --- ROTAS DE SERVIÇOS ---
+app.get('/services', async () => {
+  return await db.select().from(services);
+});
+
+app.post('/services', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const serviceSchema = z.object({
+    name: z.string(),
+    category: z.string(),
+    estimatedTime: z.number().int(),
+  });
+
+  try {
+    const data = serviceSchema.parse(request.body);
+    const [newService] = await db.insert(services).values(data).returning();
+    return reply.status(201).send(newService);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao cadastrar serviço." });
+  }
+});
+
+app.put('/services/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  const bodySchema = z.object({
+    name: z.string(),
+    category: z.string(),
+    estimatedTime: z.number().int(),
+  });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    const data = bodySchema.parse(request.body);
+
+    const [updated] = await db.update(services).set(data).where(eq(services.id, id)).returning();
+    return reply.send(updated);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao atualizar serviço." });
+  }
+});
+
+app.delete('/services/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    await db.delete(services).where(eq(services.id, id));
+    return reply.status(204).send();
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao remover serviço." });
+  }
+});
 
 
 
