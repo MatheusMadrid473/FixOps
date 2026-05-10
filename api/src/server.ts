@@ -490,6 +490,9 @@ app.get('/logs', async () => {
     .select({
       id: serviceLogs.id,
       osNumber: serviceLogs.osNumber,
+      equipmentId: serviceLogs.equipmentId,
+      serviceId: serviceLogs.serviceId,
+      userId: serviceLogs.userId,
       equipmentName: equipments.name,
       serviceName: services.name,
       technicianName: users.name,
