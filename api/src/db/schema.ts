@@ -14,12 +14,16 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// db/schema.ts
 export const equipments = pgTable('equipments', {
-  id: uuid('id').primaryKey().defaultRandom(),
+  id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull(),
-  unitCost: integer('unit_cost').notNull(), // Custo em centavos
-  model: text('model'), // Útil para filtros Protheus
-  serialNumber: text('serial_number'), // Rastreabilidade de Ativo
+  sku: text('sku').unique(), // Código interno ou part number
+  category: text('category').notNull(), // Pneus, Lubrificantes, Filtros, etc.
+  unit: text('unit').default('UN'), // UN, L, KG, M
+  unitCost: integer('unit_cost').notNull(),
+  minStock: integer('min_stock').default(0), // Alerta de estoque baixo
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const groups = pgTable('groups', {

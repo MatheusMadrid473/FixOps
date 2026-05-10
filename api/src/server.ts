@@ -154,13 +154,50 @@ app.post('/equipments', async (request, reply) => {
 
   const equipmentSchema = z.object({
     name: z.string(),
+    sku: z.string(),
+    category: z.string(),
+    unit: z.string(),
     unitCost: z.number().int(),
   });
 
-  const data = equipmentSchema.parse(request.body);
-  const [newEquipment] = await db.insert(equipments).values(data).returning();
-  return reply.status(201).send(newEquipment);
+  try {
+    const data = equipmentSchema.parse(request.body);
+    const [newEquipment] = await db.insert(equipments).values(data).returning();
+    return reply.status(201).send(newEquipment);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao cadastrar equipamento." });
+  }
 });
+
+// Atualizar Equipamento
+app.put('/equipments/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  const bodySchema = z.object({
+    name: z.string(),
+    sku: z.string(),
+    category: z.string(),
+    unit: z.string(),
+    unitCost: z.number().int(),
+  });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    const data = bodySchema.parse(request.body);
+
+    const [updated] = await db.update(equipments)
+      .set(data)
+      .where(eq(equipments.id, id))
+      .returning();
+
+    return reply.send(updated);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao atualizar equipamento." });
+  }
+});
+
 
 app.get('/groups', async () => {
   return await db.select().from(groups);
@@ -336,7 +373,26 @@ app.put('/users/:id', async (request, reply) => {
   }
 });
 
+// --- ROTAS DE EQUIPAMENTOS (COMPLEMENTO) ---
 
+// Remover Equipamento
+app.delete('/equipments/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    
+    // O Drizzle retornará um array vazio se não deletar nada
+    await db.delete(equipments).where(eq(equipments.id, id));
+    
+    return reply.status(204).send();
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao remover equipamento. Verifique se existem logs vinculados." });
+  }
+});
 
 
 
