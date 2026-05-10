@@ -14,15 +14,16 @@ const app = fastify();
 // Configurações
 app.register(cors, { 
   origin: '*', 
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] // Adicione PATCH aqui explicitamente
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 });
+
 app.register(jwt, { secret: process.env.JWT_SECRET! });
 
-// --- 1. Atualize o Middleware para liberar a rota de update (opcional, ou garanta o token) ---
+// Middleware de Autenticação
 app.addHook('preHandler', async (request, reply) => {
   const { url, method } = request;
 
-  // Libera Login, Cadastro e agora o Update de senha (para testes iniciais)
+  // Rotas públicas
   if (url === '/login' || (url === '/users' && method === 'POST') || url === '/users/update-password') {
     return;
   }
@@ -34,52 +35,12 @@ app.addHook('preHandler', async (request, reply) => {
   }
 });
 
-// --- 2. Rota com Log de Entrada ---
-app.patch('/users/update-password', async (request, reply) => {
-  console.log("=> Recebendo requisição de alteração de senha:", request.body); // LOG DE ENTRADA
-
-  try {
-    const { username, currentPassword, newPassword } = z.object({
-      username: z.string(),
-      currentPassword: z.string(),
-      newPassword: z.string().min(6)
-    }).parse(request.body);
-
-    const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
-
-    if (!user) {
-      console.log("=> Usuário não encontrado:", username);
-      return reply.status(404).send({ message: "Usuário não encontrado." });
-    }
-
-    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
-    
-    if (!isPasswordValid) {
-      console.log("=> Senha atual incorreta para:", username);
-      return reply.status(401).send({ message: "Senha atual incorreta." });
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    
-    await db.update(users)
-      .set({ password: hashedPassword })
-      .where(eq(users.username, username));
-
-    console.log("=> Senha atualizada com sucesso para:", username);
-    return reply.send({ message: "Senha atualizada com sucesso!" });
-
-  } catch (error) {
-    console.error("[Update Password Error]:", error);
-    return reply.status(500).send({ message: "Erro interno ao atualizar senha." });
-  }
-});
-
 // --- ROTAS DE USUÁRIO E AUTENTICAÇÃO ---
 
 app.post('/users', async (request, reply) => {
   const createUserSchema = z.object({
     name: z.string().min(3),
-    username: z.string().min(3), // Adicionado username na validação
+    username: z.string().min(3),
     email: z.string().email(),
     password: z.string().min(6),
     role: z.enum(['ADMIN', 'MANAGER', 'TECHNICIAN']).default('TECHNICIAN'),
@@ -87,7 +48,6 @@ app.post('/users', async (request, reply) => {
 
   const { name, username, email, password, role } = createUserSchema.parse(request.body);
 
-  // Verifica se e-mail ou username já existem
   const [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (existingUser) {
     return reply.status(409).send({ message: 'E-mail já cadastrado.' });
@@ -95,10 +55,9 @@ app.post('/users', async (request, reply) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
 
-  // Agora enviamos o 'username' no insert para satisfazer o TypeScript e o Banco
   const [newUser] = await db.insert(users).values({
     name,
-    username, // Incluído aqui
+    username,
     email,
     password: hashedPassword,
     role,
@@ -115,13 +74,12 @@ app.post('/users', async (request, reply) => {
 
 app.post('/login', async (request, reply) => {
   const loginSchema = z.object({
-    username: z.string(), // Mudamos de email para username
+    username: z.string(),
     password: z.string(),
   });
 
   const { username, password } = loginSchema.parse(request.body);
 
-  // Busca pelo username
   const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
   
   if (!user) {
@@ -133,32 +91,62 @@ app.post('/login', async (request, reply) => {
     return reply.status(401).send({ message: 'Usuário ou senha inválidos.' });
   }
 
-const token = app.jwt.sign({ 
+  const token = app.jwt.sign({ 
     sub: user.id, 
     role: user.role,
     name: user.name 
   }, { expiresIn: '7d' });
 
-  // ADICIONE O USERNAME AQUI:
   return reply.send({ 
     token, 
     user: { 
       id: user.id, 
       name: user.name, 
       role: user.role,
-      username: user.username // Este campo é essencial!
+      username: user.username
     } 
   });
 });
 
+app.patch('/users/update-password', async (request, reply) => {
+  try {
+    const { username, currentPassword, newPassword } = z.object({
+      username: z.string(),
+      currentPassword: z.string(),
+      newPassword: z.string().min(6)
+    }).parse(request.body);
+
+    const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
+
+    if (!user) {
+      return reply.status(404).send({ message: "Usuário não encontrado." });
+    }
+
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    
+    if (!isPasswordValid) {
+      return reply.status(401).send({ message: "Senha atual incorreta." });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    await db.update(users)
+      .set({ password: hashedPassword })
+      .where(eq(users.username, username));
+
+    return reply.send({ message: "Senha atualizada com sucesso!" });
+  } catch (error) {
+    console.error("[Update Password Error]:", error);
+    return reply.status(500).send({ message: "Erro interno ao atualizar senha." });
+  }
+});
+
 // --- ROTAS DE GESTÃO ---
 
-// Listar Equipamentos
 app.get('/equipments', async () => {
   return await db.select().from(equipments);
 });
 
-// Cadastrar Equipamento (Apenas ADMIN/MANAGER)
 app.post('/equipments', async (request, reply) => {
   const { role } = request.user as { role: string };
   if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
@@ -173,12 +161,10 @@ app.post('/equipments', async (request, reply) => {
   return reply.status(201).send(newEquipment);
 });
 
-// Listar Grupos
 app.get('/groups', async () => {
   return await db.select().from(groups);
 });
 
-// Criar Grupo
 app.post('/groups', async (request, reply) => {
   const { role } = request.user as { role: string };
   if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
@@ -193,7 +179,6 @@ app.post('/groups', async (request, reply) => {
   return reply.status(201).send(newGroup);
 });
 
-// Listar Usuários (Para seleção em filtros ou cadastros)
 app.get('/users', async () => {
   return await db.select({
     id: users.id,
@@ -212,35 +197,62 @@ app.post('/logs', async (request, reply) => {
     technicianId: z.string().uuid(),
     groupId: z.string().uuid(),
     equipmentId: z.string().uuid(),
+    serviceId: z.string().uuid().optional(),
     quantity: z.number().int().min(1),
+    startDate: z.string().datetime(),
+    endDate: z.string().datetime(),
   });
 
-  const { description, technicianId, groupId, equipmentId, quantity } = logSchema.parse(request.body);
+  try {
+    const { 
+      description, 
+      technicianId, 
+      groupId, 
+      equipmentId, 
+      serviceId, 
+      quantity, 
+      startDate, 
+      endDate 
+    } = logSchema.parse(request.body);
 
-  // 1. Busca o equipamento para saber o custo unitário
-  const [equipment] = await db.select().from(equipments).where(eq(equipments.id, equipmentId)).limit(1);
+    const [equipment] = await db.select()
+      .from(equipments)
+      .where(eq(equipments.id, equipmentId))
+      .limit(1);
 
-  if (!equipment) {
-    return reply.status(404).send({ message: 'Equipamento não encontrado.' });
+    if (!equipment) {
+      return reply.status(404).send({ message: 'Equipamento não encontrado.' });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const totalMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
+    const unitCostAtTime = equipment.unitCost;
+    const totalCost = unitCostAtTime * quantity;
+
+    const [newLog] = await db.insert(maintenanceLogs).values({
+      description,
+      technicianId,
+      groupId,
+      equipmentId,
+      serviceId,
+      quantity,
+      unitCostAtTime,
+      totalCost,
+      startDate: start,
+      endDate: end,
+      totalMinutes,
+      status: 'COMPLETED',
+    }).returning();
+
+    return reply.status(201).send(newLog);
+  } catch (error) {
+    console.error("[Log Create Error]:", error);
+    return reply.status(400).send({ message: "Erro ao criar apontamento." });
   }
-
-  // 2. Calcula o custo total (em centavos)
-  const totalCost = equipment.unitCost * quantity;
-
-  // 3. Insere a OS no banco
-  const [newLog] = await db.insert(maintenanceLogs).values({
-    description,
-    technicianId,
-    groupId,
-    equipmentId,
-    quantity,
-    totalCost,
-  }).returning();
-
-  return reply.status(201).send(newLog);
 });
 
-// Listar todos os Apontamentos com Join (Relacionamentos)
+// Listar todos os Apontamentos com Join
 app.get('/logs', async () => {
   const result = await db.select({
     id: maintenanceLogs.id,
@@ -251,6 +263,9 @@ app.get('/logs', async () => {
     quantity: maintenanceLogs.quantity,
     totalCost: maintenanceLogs.totalCost,
     createdAt: maintenanceLogs.createdAt,
+    startDate: maintenanceLogs.startDate,
+    endDate: maintenanceLogs.endDate,
+    totalMinutes: maintenanceLogs.totalMinutes,
   })
   .from(maintenanceLogs)
   .leftJoin(users, eq(maintenanceLogs.technicianId, users.id))
@@ -261,7 +276,6 @@ app.get('/logs', async () => {
   return result;
 });
 
-// Inicialização do Servidor
 const start = async () => {
   try {
     const port = Number(process.env.PORT) || 3333;
