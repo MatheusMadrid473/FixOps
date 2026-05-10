@@ -1,0 +1,276 @@
+import fastify from 'fastify';
+import cors from '@fastify/cors';
+import jwt from '@fastify/jwt';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+import 'dotenv/config';
+import { eq, ne, sql } from 'drizzle-orm';
+
+import { db } from './db/index.js';
+import { users, equipments, groups, maintenanceLogs } from './db/schema.js';
+
+const app = fastify();
+
+// Configurações
+app.register(cors, { 
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] // Adicione PATCH aqui explicitamente
+});
+app.register(jwt, { secret: process.env.JWT_SECRET! });
+
+// --- 1. Atualize o Middleware para liberar a rota de update (opcional, ou garanta o token) ---
+app.addHook('preHandler', async (request, reply) => {
+  const { url, method } = request;
+
+  // Libera Login, Cadastro e agora o Update de senha (para testes iniciais)
+  if (url === '/login' || (url === '/users' && method === 'POST') || url === '/users/update-password') {
+    return;
+  }
+
+  try {
+    await request.jwtVerify();
+  } catch (err) {
+    return reply.status(401).send({ message: 'Token ausente ou inválido.' });
+  }
+});
+
+// --- 2. Rota com Log de Entrada ---
+app.patch('/users/update-password', async (request, reply) => {
+  console.log("=> Recebendo requisição de alteração de senha:", request.body); // LOG DE ENTRADA
+
+  try {
+    const { username, currentPassword, newPassword } = z.object({
+      username: z.string(),
+      currentPassword: z.string(),
+      newPassword: z.string().min(6)
+    }).parse(request.body);
+
+    const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
+
+    if (!user) {
+      console.log("=> Usuário não encontrado:", username);
+      return reply.status(404).send({ message: "Usuário não encontrado." });
+    }
+
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    
+    if (!isPasswordValid) {
+      console.log("=> Senha atual incorreta para:", username);
+      return reply.status(401).send({ message: "Senha atual incorreta." });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    await db.update(users)
+      .set({ password: hashedPassword })
+      .where(eq(users.username, username));
+
+    console.log("=> Senha atualizada com sucesso para:", username);
+    return reply.send({ message: "Senha atualizada com sucesso!" });
+
+  } catch (error) {
+    console.error("[Update Password Error]:", error);
+    return reply.status(500).send({ message: "Erro interno ao atualizar senha." });
+  }
+});
+
+// --- ROTAS DE USUÁRIO E AUTENTICAÇÃO ---
+
+app.post('/users', async (request, reply) => {
+  const createUserSchema = z.object({
+    name: z.string().min(3),
+    username: z.string().min(3), // Adicionado username na validação
+    email: z.string().email(),
+    password: z.string().min(6),
+    role: z.enum(['ADMIN', 'MANAGER', 'TECHNICIAN']).default('TECHNICIAN'),
+  });
+
+  const { name, username, email, password, role } = createUserSchema.parse(request.body);
+
+  // Verifica se e-mail ou username já existem
+  const [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  if (existingUser) {
+    return reply.status(409).send({ message: 'E-mail já cadastrado.' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  // Agora enviamos o 'username' no insert para satisfazer o TypeScript e o Banco
+  const [newUser] = await db.insert(users).values({
+    name,
+    username, // Incluído aqui
+    email,
+    password: hashedPassword,
+    role,
+  }).returning({
+    id: users.id,
+    name: users.name,
+    username: users.username,
+    email: users.email,
+    role: users.role,
+  });
+
+  return reply.status(201).send(newUser);
+});
+
+app.post('/login', async (request, reply) => {
+  const loginSchema = z.object({
+    username: z.string(), // Mudamos de email para username
+    password: z.string(),
+  });
+
+  const { username, password } = loginSchema.parse(request.body);
+
+  // Busca pelo username
+  const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
+  
+  if (!user) {
+    return reply.status(401).send({ message: 'Usuário ou senha inválidos.' });
+  }
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+  if (!isPasswordValid) {
+    return reply.status(401).send({ message: 'Usuário ou senha inválidos.' });
+  }
+
+const token = app.jwt.sign({ 
+    sub: user.id, 
+    role: user.role,
+    name: user.name 
+  }, { expiresIn: '7d' });
+
+  // ADICIONE O USERNAME AQUI:
+  return reply.send({ 
+    token, 
+    user: { 
+      id: user.id, 
+      name: user.name, 
+      role: user.role,
+      username: user.username // Este campo é essencial!
+    } 
+  });
+});
+
+// --- ROTAS DE GESTÃO ---
+
+// Listar Equipamentos
+app.get('/equipments', async () => {
+  return await db.select().from(equipments);
+});
+
+// Cadastrar Equipamento (Apenas ADMIN/MANAGER)
+app.post('/equipments', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const equipmentSchema = z.object({
+    name: z.string(),
+    unitCost: z.number().int(),
+  });
+
+  const data = equipmentSchema.parse(request.body);
+  const [newEquipment] = await db.insert(equipments).values(data).returning();
+  return reply.status(201).send(newEquipment);
+});
+
+// Listar Grupos
+app.get('/groups', async () => {
+  return await db.select().from(groups);
+});
+
+// Criar Grupo
+app.post('/groups', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const groupSchema = z.object({
+    name: z.string(),
+    leaderId: z.string().uuid(),
+  });
+
+  const data = groupSchema.parse(request.body);
+  const [newGroup] = await db.insert(groups).values(data).returning();
+  return reply.status(201).send(newGroup);
+});
+
+// Listar Usuários (Para seleção em filtros ou cadastros)
+app.get('/users', async () => {
+  return await db.select({
+    id: users.id,
+    name: users.name,
+    username: users.username,
+    role: users.role
+  })
+  .from(users)
+  .where(ne(users.role, 'ADMIN'));
+});
+
+// Criar Apontamento (Ordem de Serviço)
+app.post('/logs', async (request, reply) => {
+  const logSchema = z.object({
+    description: z.string().optional(),
+    technicianId: z.string().uuid(),
+    groupId: z.string().uuid(),
+    equipmentId: z.string().uuid(),
+    quantity: z.number().int().min(1),
+  });
+
+  const { description, technicianId, groupId, equipmentId, quantity } = logSchema.parse(request.body);
+
+  // 1. Busca o equipamento para saber o custo unitário
+  const [equipment] = await db.select().from(equipments).where(eq(equipments.id, equipmentId)).limit(1);
+
+  if (!equipment) {
+    return reply.status(404).send({ message: 'Equipamento não encontrado.' });
+  }
+
+  // 2. Calcula o custo total (em centavos)
+  const totalCost = equipment.unitCost * quantity;
+
+  // 3. Insere a OS no banco
+  const [newLog] = await db.insert(maintenanceLogs).values({
+    description,
+    technicianId,
+    groupId,
+    equipmentId,
+    quantity,
+    totalCost,
+  }).returning();
+
+  return reply.status(201).send(newLog);
+});
+
+// Listar todos os Apontamentos com Join (Relacionamentos)
+app.get('/logs', async () => {
+  const result = await db.select({
+    id: maintenanceLogs.id,
+    description: maintenanceLogs.description,
+    technicianName: users.name,
+    equipmentName: equipments.name,
+    groupName: groups.name,
+    quantity: maintenanceLogs.quantity,
+    totalCost: maintenanceLogs.totalCost,
+    createdAt: maintenanceLogs.createdAt,
+  })
+  .from(maintenanceLogs)
+  .leftJoin(users, eq(maintenanceLogs.technicianId, users.id))
+  .leftJoin(equipments, eq(maintenanceLogs.equipmentId, equipments.id))
+  .leftJoin(groups, eq(maintenanceLogs.groupId, groups.id))
+  .orderBy(sql`${maintenanceLogs.createdAt} DESC`);
+
+  return result;
+});
+
+// Inicialização do Servidor
+const start = async () => {
+  try {
+    const port = Number(process.env.PORT) || 3333;
+    await app.listen({ port, host: '0.0.0.0' });
+    console.log(`[Server] FixOps HTTP Server running on port ${port}`);
+  } catch (err) {
+    console.error(err);
+    process.exit(1);
+  }
+};
+
+start();
