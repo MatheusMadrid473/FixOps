@@ -7,6 +7,7 @@ import { Equipments } from './pages/Equipments';
 import { Groups } from './pages/Groups';
 import { UsersList } from './pages/UsersList';
 import { Services } from './pages/Services';
+import { Layout } from './components/Layout';
 
 export function App() {
   return (
@@ -15,14 +16,13 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         
-        {/* Rotas Protegidas */}
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/equipments" element={<Equipments />} />
-        <Route path="/groups" element={<Groups />} />
-        <Route path="/services" element={<Services />} />
-        <Route path="/users" element={<UsersList />} />
+        {/* Rotas com Menu */}
+        <Route path="/dashboard" element={<Layout><Dashboard /></Layout>} />
+        <Route path="/equipments" element={<Layout><Equipments /></Layout>} />
+        <Route path="/groups" element={<Layout><Groups /></Layout>} />
+        <Route path="/services" element={<Layout><Services /></Layout>} />
+        <Route path="/users" element={<Layout><UsersList /></Layout>} />
         
-        {/* Redirecionamento padrão */}
         <Route path="/" element={<Navigate to="/dashboard" />} />
         <Route path="*" element={<Navigate to="/login" />} />
       </Routes>

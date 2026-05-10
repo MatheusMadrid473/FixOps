@@ -103,7 +103,8 @@ app.post('/login', async (request, reply) => {
       id: user.id, 
       name: user.name, 
       role: user.role,
-      username: user.username
+      username: user.username,
+      email: user.email
     } 
   });
 });
@@ -184,6 +185,7 @@ app.get('/users', async () => {
     id: users.id,
     name: users.name,
     username: users.username,
+    email: users.email,
     role: users.role
   })
   .from(users)
@@ -275,6 +277,71 @@ app.get('/logs', async () => {
 
   return result;
 });
+
+// Rota para Atualizar Usuário
+app.put('/users/:id', async (request, reply) => {
+  const updateUserParams = z.object({
+    id: z.string().uuid(),
+  });
+
+  const updateUserBody = z.object({
+    name: z.string().min(3),
+    username: z.string().min(3),
+    email: z.string().email(),
+    role: z.enum(['ADMIN', 'MANAGER', 'TECHNICIAN']),
+  });
+
+  try {
+    const { id } = updateUserParams.parse(request.params);
+    const { name, username, email, role } = updateUserBody.parse(request.body);
+
+    // Verifica se o usuário existe
+    const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+
+    if (!user) {
+      return reply.status(404).send({ message: 'Usuário não encontrado.' });
+    }
+
+    // Verifica se o novo username ou email já está sendo usado por OUTRO usuário
+    // (Isso evita erro de duplicidade no banco)
+    const [existingConflict] = await db.select()
+      .from(users)
+      .where(
+        sql`(${eq(users.email, email)} OR ${eq(users.username, username)}) AND ${ne(users.id, id)}`
+      )
+      .limit(1);
+
+    if (existingConflict) {
+      return reply.status(409).send({ message: 'E-mail ou Username já em uso por outro colaborador.' });
+    }
+
+    // Executa o Update
+    const [updatedUser] = await db.update(users)
+      .set({ name, username, email, role })
+      .where(eq(users.id, id))
+      .returning({
+        id: users.id,
+        name: users.name,
+        username: users.username,
+        email: users.email,
+        role: users.role,
+      });
+
+    console.log(`=> Usuário atualizado: ${updatedUser.username}`);
+    return reply.send(updatedUser);
+
+  } catch (error) {
+    console.error("[Update User Error]:", error);
+    return reply.status(400).send({ message: 'Erro ao atualizar dados do usuário.' });
+  }
+});
+
+
+
+
+
+
+// Iniciar o servidor ------------------------------------------------
 
 const start = async () => {
   try {
