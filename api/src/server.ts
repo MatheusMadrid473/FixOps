@@ -4,10 +4,11 @@ import jwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import 'dotenv/config';
-import { eq, ne, sql } from 'drizzle-orm';
+import { eq, ne, sql, desc } from 'drizzle-orm';
+import { hash } from 'bcryptjs';
 
 import { db } from './db/index.js';
-import { users, equipments, groups, maintenanceLogs, services } from './db/schema.js';
+import { users, equipments, groups, maintenanceLogs, services, serviceLogs,  } from './db/schema.js';
 
 const app = fastify();
 
@@ -34,6 +35,50 @@ app.addHook('preHandler', async (request, reply) => {
     return reply.status(401).send({ message: 'Token ausente ou inválido.' });
   }
 });
+
+// Inicialização do Super Admin
+
+async function bootstrapSuperAdmin() {
+  const adminLogin = process.env.DEFAULT_ADMIN_LOGIN;
+  const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+  const adminEmail = process.env.DEFAULT_ADMIN_EMAIL;
+
+  if (!adminLogin || !adminPassword || !adminEmail) {
+    console.log('[Seed] Variáveis de ambiente incompletas. Ignorando.');
+    return;
+  }
+
+  try {
+    const existingAdmin = await db.select().from(users).where(eq(users.username, adminLogin));
+    const hashedPassword = await hash(adminPassword, 10);
+
+    if (existingAdmin.length === 0) {
+      // USUÁRIO NÃO EXISTE: CRIA
+      await db.insert(users).values({
+        name: 'Super Admin',
+        username: adminLogin,
+        email: adminEmail,
+        password: hashedPassword,
+        role: 'ADMIN', 
+      });
+      console.log('[Seed] Super usuário CRIADO com sucesso a partir do .env.');
+    } else {
+      // USUÁRIO JÁ EXISTE: ATUALIZA SENHA E EMAIL (Força a alteração do .env pro banco)
+      await db.update(users)
+        .set({ 
+          password: hashedPassword, 
+          email: adminEmail 
+        })
+        .where(eq(users.username, adminLogin));
+      console.log('[Seed] Super usuário ATUALIZADO com as credenciais do .env.');
+    }
+  } catch (error) {
+    console.error('[Seed] Erro ao tentar criar/atualizar o Super Admin:', error);
+  }
+}
+
+// Executa a função na inicialização do servidor
+bootstrapSuperAdmin();
 
 // --- ROTAS DE USUÁRIO E AUTENTICAÇÃO ---
 
@@ -198,7 +243,7 @@ app.put('/equipments/:id', async (request, reply) => {
   }
 });
 
-
+// --- ROTAS DE GRUPOS/TIMES ---
 app.get('/groups', async () => {
   return await db.select().from(groups);
 });
@@ -208,13 +253,81 @@ app.post('/groups', async (request, reply) => {
   if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
 
   const groupSchema = z.object({
-    name: z.string(),
-    leaderId: z.string().uuid(),
+    name: z.string().min(2),
+    // Agora o Zod valida que é um array e exige pelo menos 1 especialidade
+    specialties: z.array(z.string()).min(1), 
+    leaderId: z.string().uuid().nullable().optional(),
   });
 
-  const data = groupSchema.parse(request.body);
-  const [newGroup] = await db.insert(groups).values(data).returning();
-  return reply.status(201).send(newGroup);
+  try {
+    const data = groupSchema.parse(request.body);
+    const [newGroup] = await db.insert(groups).values(data).returning();
+    return reply.status(201).send(newGroup);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao cadastrar grupo." });
+  }
+});
+
+app.put('/groups/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  const bodySchema = z.object({
+    name: z.string().min(2),
+    // Mesma alteração aqui
+    specialties: z.array(z.string()).min(1), 
+    leaderId: z.string().uuid().nullable().optional(),
+  });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    const data = bodySchema.parse(request.body);
+
+    const [updated] = await db.update(groups)
+      .set(data)
+      .where(eq(groups.id, id))
+      .returning();
+
+    return reply.send(updated);
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao atualizar grupo." });
+  }
+});
+
+app.delete('/groups/:id', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    await db.delete(groups).where(eq(groups.id, id));
+    return reply.status(204).send();
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao remover grupo." });
+  }
+});
+
+// --- ROTA EXCLUSIVA PARA VINCULAR/DESVINCULAR MEMBRO DA EQUIPE ---
+app.patch('/users/:id/group', async (request, reply) => {
+  const { role } = request.user as { role: string };
+  if (role === 'TECHNICIAN') return reply.status(403).send({ message: 'Acesso negado.' });
+
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  const bodySchema = z.object({
+    groupId: z.string().uuid().nullable(), // Aceita UUID ou null (para remover da equipe)
+  });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    const { groupId } = bodySchema.parse(request.body);
+
+    await db.update(users).set({ groupId }).where(eq(users.id, id));
+    return reply.send({ message: "Vínculo atualizado com sucesso." });
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao atualizar membro da equipe." });
+  }
 });
 
 app.get('/users', async () => {
@@ -223,96 +336,11 @@ app.get('/users', async () => {
     name: users.name,
     username: users.username,
     email: users.email,
-    role: users.role
+    role: users.role,
+    groupId: users.groupId,
   })
   .from(users)
   .where(ne(users.role, 'ADMIN'));
-});
-
-// Criar Apontamento (Ordem de Serviço)
-app.post('/logs', async (request, reply) => {
-  const logSchema = z.object({
-    description: z.string().optional(),
-    technicianId: z.string().uuid(),
-    groupId: z.string().uuid(),
-    equipmentId: z.string().uuid(),
-    serviceId: z.string().uuid().optional(),
-    quantity: z.number().int().min(1),
-    startDate: z.string().datetime(),
-    endDate: z.string().datetime(),
-  });
-
-  try {
-    const { 
-      description, 
-      technicianId, 
-      groupId, 
-      equipmentId, 
-      serviceId, 
-      quantity, 
-      startDate, 
-      endDate 
-    } = logSchema.parse(request.body);
-
-    const [equipment] = await db.select()
-      .from(equipments)
-      .where(eq(equipments.id, equipmentId))
-      .limit(1);
-
-    if (!equipment) {
-      return reply.status(404).send({ message: 'Equipamento não encontrado.' });
-    }
-
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const totalMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
-    const unitCostAtTime = equipment.unitCost;
-    const totalCost = unitCostAtTime * quantity;
-
-    const [newLog] = await db.insert(maintenanceLogs).values({
-      description,
-      technicianId,
-      groupId,
-      equipmentId,
-      serviceId,
-      quantity,
-      unitCostAtTime,
-      totalCost,
-      startDate: start,
-      endDate: end,
-      totalMinutes,
-      status: 'COMPLETED',
-    }).returning();
-
-    return reply.status(201).send(newLog);
-  } catch (error) {
-    console.error("[Log Create Error]:", error);
-    return reply.status(400).send({ message: "Erro ao criar apontamento." });
-  }
-});
-
-// Listar todos os Apontamentos com Join
-app.get('/logs', async () => {
-  const result = await db.select({
-    id: maintenanceLogs.id,
-    description: maintenanceLogs.description,
-    technicianName: users.name,
-    equipmentName: equipments.name,
-    groupName: groups.name,
-    quantity: maintenanceLogs.quantity,
-    totalCost: maintenanceLogs.totalCost,
-    createdAt: maintenanceLogs.createdAt,
-    startDate: maintenanceLogs.startDate,
-    endDate: maintenanceLogs.endDate,
-    totalMinutes: maintenanceLogs.totalMinutes,
-  })
-  .from(maintenanceLogs)
-  .leftJoin(users, eq(maintenanceLogs.technicianId, users.id))
-  .leftJoin(equipments, eq(maintenanceLogs.equipmentId, equipments.id))
-  .leftJoin(groups, eq(maintenanceLogs.groupId, groups.id))
-  .orderBy(sql`${maintenanceLogs.createdAt} DESC`);
-
-  return result;
 });
 
 // Rota para Atualizar Usuário
@@ -452,6 +480,133 @@ app.delete('/services/:id', async (request, reply) => {
     return reply.status(204).send();
   } catch (error) {
     return reply.status(400).send({ message: "Erro ao remover serviço." });
+  }
+});
+
+
+// --- ROTAS DE APONTAMENTO (LOGS) ---
+app.get('/logs', async () => {
+  return await db
+    .select({
+      id: serviceLogs.id,
+      osNumber: serviceLogs.osNumber,
+      equipmentName: equipments.name,
+      serviceName: services.name,
+      technicianName: users.name,
+      startDate: serviceLogs.startDate,
+      startTime: serviceLogs.startTime,
+      endDate: serviceLogs.endDate,
+      endTime: serviceLogs.endTime,
+      costCenter: serviceLogs.costCenter,
+      notes: serviceLogs.notes,
+      groupId: users.groupId,
+    })
+    .from(serviceLogs)
+    .innerJoin(equipments, eq(serviceLogs.equipmentId, equipments.id))
+    .innerJoin(services, eq(serviceLogs.serviceId, services.id))
+    .innerJoin(users, eq(serviceLogs.userId, users.id));
+});
+
+app.post('/logs', async (request, reply) => {
+  const logSchema = z.object({
+    costCenter: z.string().optional(),
+    equipmentId: z.string().uuid(),
+    serviceId: z.string().uuid(),
+    userId: z.string().uuid(),
+    startDate: z.string(),
+    startTime: z.string(),
+    endDate: z.string(),
+    endTime: z.string(),
+    notes: z.string().optional(),
+  });
+
+  try {
+    const data = logSchema.parse(request.body);
+
+    const lastLogs = await db.select()
+      .from(serviceLogs)
+      .orderBy(desc(serviceLogs.osNumber))
+      .limit(1);
+
+    let nextOsNumber = "1";
+
+    if (lastLogs.length > 0 && lastLogs[0].osNumber) {
+      const currentNumber = parseInt(lastLogs[0].osNumber, 10);
+      if (!isNaN(currentNumber)) {
+        nextOsNumber = (currentNumber + 1).toString();
+      }
+    }
+
+    const [newLog] = await db.insert(serviceLogs).values({
+      osNumber: nextOsNumber, // Gerado e injetado pelo backend
+      costCenter: data.costCenter,
+      equipmentId: data.equipmentId,
+      serviceId: data.serviceId,
+      userId: data.userId,
+      startDate: data.startDate,
+      startTime: data.startTime,
+      endDate: data.endDate,
+      endTime: data.endTime,
+      notes: data.notes,
+    }).returning();
+
+    return reply.status(201).send(newLog);
+  } catch (error) {
+    console.error(error);
+    return reply.status(400).send({ message: "Erro ao registrar apontamento." });
+  }
+});
+
+app.put('/logs/:id', async (request, reply) => {
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  
+  const logSchema = z.object({
+    costCenter: z.string().optional(),
+    equipmentId: z.string().uuid(),
+    serviceId: z.string().uuid(),
+    userId: z.string().uuid(),
+    startDate: z.string(),
+    startTime: z.string(),
+    endDate: z.string(),
+    endTime: z.string(),
+    notes: z.string().optional(),
+  });
+
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    const data = logSchema.parse(request.body);
+
+    // Atualização explícita garantindo que osNumber não seja tocado
+    const [updated] = await db.update(serviceLogs)
+      .set({
+        costCenter: data.costCenter,
+        equipmentId: data.equipmentId,
+        serviceId: data.serviceId,
+        userId: data.userId,
+        startDate: data.startDate,
+        startTime: data.startTime,
+        endDate: data.endDate,
+        endTime: data.endTime,
+        notes: data.notes,
+      })
+      .where(eq(serviceLogs.id, id))
+      .returning();
+      
+    return reply.send(updated);
+  } catch (error) {
+    console.error(error);
+    return reply.status(400).send({ message: "Erro ao atualizar apontamento." });
+  }
+});
+
+app.delete('/logs/:id', async (request, reply) => {
+  const paramsSchema = z.object({ id: z.string().uuid() });
+  try {
+    const { id } = paramsSchema.parse(request.params);
+    await db.delete(serviceLogs).where(eq(serviceLogs.id, id));
+    return reply.status(204).send();
+  } catch (error) {
+    return reply.status(400).send({ message: "Erro ao remover apontamento." });
   }
 });
 

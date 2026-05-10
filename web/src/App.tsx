@@ -8,6 +8,7 @@ import { Groups } from './pages/Groups';
 import { UsersList } from './pages/UsersList';
 import { Services } from './pages/Services';
 import { Layout } from './components/Layout';
+import { Apontamentos } from './pages/Apontamentos';
 
 export function App() {
   return (
@@ -21,6 +22,7 @@ export function App() {
         <Route path="/equipments" element={<Layout><Equipments /></Layout>} />
         <Route path="/groups" element={<Layout><Groups /></Layout>} />
         <Route path="/services" element={<Layout><Services /></Layout>} />
+        <Route path="/apontamentos" element={<Layout><Apontamentos /></Layout>} />
         <Route path="/users" element={<Layout><UsersList /></Layout>} />
         
         <Route path="/" element={<Navigate to="/dashboard" />} />

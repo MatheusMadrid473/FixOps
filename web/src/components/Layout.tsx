@@ -79,6 +79,13 @@ export function Layout({ children }: LayoutProps) {
             <UserPlus size={18} /> Usuários
           </button>
 
+          <button 
+            onClick={() => navigate('/apontamentos')}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors font-medium text-left cursor-pointer ${isActive('/apontamentos') ? 'bg-blue-base' : 'hover:bg-grayscale-500'}`}
+          >
+            <ClipboardList size={18} /> Apontamentos
+          </button>
+
           <div className="mt-6 mb-2 px-4 border-t border-grayscale-500 pt-4">
             <p className="text-[10px] font-bold text-grayscale-400 uppercase tracking-widest">Sistema</p>
           </div>
